@@ -6,61 +6,56 @@ open FSharp.Charting
 open System.Windows.Forms
 
 module DFT =
-    let forwardN (n : int) (input : ComplexD[]) =
+    let inline private sinc (v : float) =
+        if Fun.IsTiny v then
+            1.0
+        else
+            let p = Constant.Pi * v
+            sin v / v
+
+    let forwardN (n : int) (input : float[]) =
         let omega = Constant.PiTimesTwo / float input.Length
 
         Array.init n (fun k ->
             if k = 0 then
-                Array.average input
+                ComplexD (Array.average input)
             else
                 let mutable sum = ComplexD.Zero
                 let dphi = omega
                 let dk = float k * dphi
                 let mutable phi = 0.0
                 for i in 0 .. input.Length-1 do
-                    let input = if i >= input.Length then input.[0] else input.[i]
-                    let a = input * ComplexD(cos phi, -sin phi) * dphi
+                    let a = input.[i] * ComplexD(cos phi, -sin phi) * dphi
                     phi <- phi + dk
                     sum <- sum + a
                 sum / Constant.Pi
         )
 
-    let backwardN (n : int) (input : ComplexD[]) =
+    let backwardN (sigma : float) (n : int) (input : ComplexD[]) =
         let omega = Constant.PiTimesTwo / float n
         Array.init n (fun k ->
             let phi = float k * omega
-            let mutable sum = input.[0]
-            for n in 1 .. input.Length-1 do
-                let cn = input.[n]
-                let angle = float n * phi
-                let ca = cos angle
-                let sa = sin angle
-                let a = 
-                    0.5 * (
-                        cn * ComplexD(ca, sa) +
-                        cn.Conjugated * ComplexD(ca, -sa)
-                    )
-
-                sum <- sum + a
+            let mutable sum = input.[0].Real
+            for k in 1 .. input.Length-1 do
+                let cn = input.[k]
+                let angle = float k * phi
+                let a = (cn.Real * cos angle - cn.Imag * sin angle)
+                if sigma > 0.0 then sum <- sum + (sinc (float k / float input.Length) ** sigma) * a
+                else sum <- sum + a
             sum
         )
 
-    let interpolate (input : ComplexD[]) (t : float)  =
+    let interpolate (sigma : float) (input : ComplexD[]) (t : float)  =
         let omega = Constant.PiTimesTwo 
-        let mutable sum = input.[0]
+        let mutable sum = input.[0].Real
         let phi = t *omega
-        for n in 1 .. input.Length-1 do
-            let cn = input.[n]
-            let angle = float n * phi
-            let ca = cos angle
-            let sa = sin angle
-            let a = 
-                0.5 * (
-                    cn * ComplexD(ca, sa) +
-                    cn.Conjugated * ComplexD(ca, -sa)
-                )
+        for k in 1 .. input.Length-1 do
+            let cn = input.[k]
+            let angle = float k * phi
+            let a = (cn.Real * cos angle - cn.Imag * sin angle)
+            if sigma > 0.0 then sum <- sum + (sinc (float k / float input.Length) ** sigma) * a
+            else sum <- sum + a
 
-            sum <- sum + a
         sum
 
 
@@ -164,6 +159,13 @@ module Excel =
             16.4401300
             16.4401300
         |]
+
+    let rectangle =
+        Array.init 96 (fun i ->
+            if i >= 45 && i <= 75 then 25.0
+            else 15.0
+        )
+
 
     let sampled =
         [|
@@ -286,44 +288,98 @@ module Excel =
             ComplexD(-0.03562499999999470000, -0.00902109795610145000 )
         |]
 
+[<Struct>]
+type Spectral<'d when 'd :> INatural> =
+    val mutable public Coefficients : ComplexD[]
+
+    static member FromCoefficients(coefficients : ComplexD[]) : Spectral<'d> =
+        if coefficients.Length <> Peano.typeSize<'d> then failwithf "[Spectral] invalid coefficients: %d" coefficients.Length
+        Spectral<'d>(Coefficients = coefficients)
+
+    static member Zero =
+        Spectral<'d>.FromCoefficients(Array.zeroCreate Peano.typeSize<'d>)
+
+    static member (+) (l : Spectral<'d>, r : Spectral<'d>) =
+        (l.Coefficients, r.Coefficients)
+        ||> Array.map2 (+)
+        |> Spectral<'d>.FromCoefficients
+        
+    static member (-) (l : Spectral<'d>, r : Spectral<'d>) =
+        (l.Coefficients, r.Coefficients)
+        ||> Array.map2 (-)
+        |> Spectral<'d>.FromCoefficients
+
+    member x.Sample(value : float, ?sigma : float) =
+        let sigma = defaultArg sigma 0.0
+        DFT.interpolate sigma x.Coefficients value
+        
+    member x.GetValues(cnt : int, ?sigma : float) =
+        let sigma = defaultArg sigma 0.0
+        DFT.backwardN sigma cnt x.Coefficients
+        
+    new(data : float[]) =
+        { Coefficients = DFT.forwardN Peano.typeSize<'d> data }
+
+
+type Size = N<32>
+
 let testFourier () =
-    let N = 17
-    let NData = Excel.inputTemp.Length
+    let NData = 1.0
 
-    let dft = DFT.forwardN N (Array.map ComplexD Excel.inputTemp) 
-    let inv = DFT.backwardN NData dft
+    let input = Excel.rectangle
 
+    let dft = Spectral<Size> input
+    let inv = dft.GetValues input.Length
 
-    let samples = 1024
+    let data (data : float[]) =
+        data |> Array.mapi (fun i v ->
+            let tc = float i / float data.Length
+            let x = NData * tc
+            x, v
+        )
 
-    let invChart (w : int) (name : string) (dft : ComplexD[]) =
-        let sampled =
-            Array.init samples (fun i ->
-                let tc = ((float i) / float samples)
-                let t = tc
-                tc * float NData, DFT.interpolate dft t
-            )
+    let spectral (sigma : float) (dft : Spectral<_>) =
+        let samples = 1024
+        Array.init samples (fun i ->
+            let tc = float i / float samples
+            let t = tc
+            tc * NData, dft.Sample(t, sigma)
+        )
 
-        Chart.Line(sampled |> Seq.map (fun (x, c) -> x, c.Real), Name = sprintf "%s" name)
-        |> Chart.WithStyling(BorderWidth = w)
+        //Chart.Line(sampled , Name = sprintf "%s" name)
+        //|> Chart.WithStyling(BorderWidth = w)
    
+    let interval (f : float) =
+        10.0 ** (round (log10 (f / 24.0)))
     
     let chart = 
         Chart.Combine [
-            invChart 7 "mysyn(excel)" Excel.fourier17
-            invChart 3 "mysyn" dft
+            //Chart.Line(spectral (Spectral<17 N>.FromCoefficients Excel.fourier17), Name = "mysyn(excel)")
+            //|> Chart.WithStyling(BorderWidth = 7)
+            
+            Chart.Line(spectral 0.0 dft, Name = "mysyn")
+            |> Chart.WithStyling(BorderWidth = 8)
+            
+            Chart.Line(spectral 2.0 dft, Name = "mysyn(2)")
+            |> Chart.WithStyling(BorderWidth = 6)
 
-            Chart.Line(Excel.sampled, Name = "excelsyn")
-            Chart.Point(inv |> Seq.mapi (fun i c -> float i, c.Real), Name = "idft(dft)", MarkerSize = 7)
+            Chart.Line(spectral 4.0 dft, Name = "mysyn(4)")
+            |> Chart.WithStyling(BorderWidth = 4)
+            
+            Chart.Line(spectral 8.0 dft, Name = "mysyn(8)")
+            |> Chart.WithStyling(BorderWidth = 2)
 
-            Chart.Point(Excel.inputTemp, Name = "input", MarkerSize = 4, Color = Drawing.Color.Black)
+            //Chart.Line(data Excel.sampled, Name = "excelsyn")
+            Chart.Point(data inv, Name = "idft(dft)", MarkerSize = 7)
+
+            Chart.Point(data input, Name = "input", MarkerSize = 4, Color = Drawing.Color.Black)
 
         ]
         |> Chart.WithLegend(true)
         |> Chart.WithXAxis(
             Min = 0.0, 
-            Max = float NData, 
-            MajorTickMark = ChartTypes.TickMark(Interval = ceil (float NData / 24.0))
+            Max = NData, 
+            MajorTickMark = ChartTypes.TickMark(Interval = interval NData)
         )
    
     let f = chart.ShowChart()
