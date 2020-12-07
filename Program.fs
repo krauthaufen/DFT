@@ -45,10 +45,10 @@ module DFT =
             sum
         )
 
-    let interpolateN (n : int) (input : ComplexD[]) (t : float)  =
-        let omega = Constant.PiTimesTwo / float n
+    let interpolate (input : ComplexD[]) (t : float)  =
+        let omega = Constant.PiTimesTwo 
         let mutable sum = input.[0]
-        let phi = t * float n * omega
+        let phi = t *omega
         for n in 1 .. input.Length-1 do
             let cn = input.[n]
             let angle = float n * phi
@@ -301,7 +301,7 @@ let testFourier () =
             Array.init samples (fun i ->
                 let tc = ((float i) / float samples)
                 let t = tc
-                tc * float NData, DFT.interpolateN NData dft t
+                tc * float NData, DFT.interpolate dft t
             )
 
         Chart.Line(sampled |> Seq.map (fun (x, c) -> x, c.Real), Name = sprintf "%s" name)
@@ -309,12 +309,6 @@ let testFourier () =
    
     
     let chart = 
-        let excelData =
-            Excel.inputTemp |> Seq.mapi (fun i c -> 
-                let tc = (float i + 0.5) / float Excel.inputTemp.Length
-                let x = tc * float NData
-                x, c
-            ) 
         Chart.Combine [
             invChart 7 "mysyn(excel)" Excel.fourier17
             invChart 3 "mysyn" dft
