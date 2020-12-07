@@ -321,6 +321,9 @@ let testFourier () =
 
             Chart.Line(Excel.sampled, Name = "excelsyn")
             Chart.Point(inv |> Seq.mapi (fun i c -> float i, c.Real), Name = "idft(dft)", MarkerSize = 7)
+
+            Chart.Point(Excel.inputTemp, Name = "input", MarkerSize = 4, Color = Drawing.Color.Black)
+
         ]
         |> Chart.WithLegend(true)
         |> Chart.WithXAxis(
